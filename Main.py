@@ -16,11 +16,13 @@ BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
 GRAY = (120, 120, 120)
 CYAN = (0, 255, 255)
-DARK_CYAN = (0, 150, 170)
-YELLOW = (255, 230, 80)
+DARK_CYAN = (0, 140, 160)
+YELLOW = (255, 220, 70)
 
 clock = pygame.time.Clock()
 FPS = 60
+font = pygame.font.SysFont("Arial", 22)
+title_font = pygame.font.SysFont("Arial", 36, bold=True)
 
 # Wand als Liniensegment
 class Wall:
@@ -29,10 +31,9 @@ class Wall:
         self.y1 = y1
         self.x2 = x2
         self.y2 = y2
-        self.glow = 0.0  # 0.0 bis 1.0, leuchtet wenn Schall auftrifft
+        self.glow = 0.0
 
     def update(self):
-        # Leuchten verblasst mit der Zeit
         if self.glow > 0:
             self.glow = max(0.0, self.glow - 0.02)
 
@@ -42,7 +43,34 @@ class Wall:
             color = (intensity, intensity, intensity)
             pygame.draw.line(surface, color, (self.x1, self.y1), (self.x2, self.y2), 2)
 
-# Einzelner Schallstrahl, der von Wänden abprallt
+# Ausgangs-Zone (Ziel des Levels)
+class ExitZone:
+    def __init__(self, x, y, radius=24):
+        self.x = x
+        self.y = y
+        self.radius = radius
+        self.glow = 0.0
+        self.ping_timer = 0.0
+
+    def update(self, dt):
+        if self.glow > 0:
+            self.glow = max(0.0, self.glow - 0.015)
+        # Gibt ab und zu ein leises Echo ab
+        self.ping_timer += dt
+        if self.ping_timer >= 3.5:
+            self.ping_timer = 0.0
+            self.glow = 0.8
+
+    def draw(self, surface):
+        if self.glow > 0:
+            intensity = int(self.glow * 255)
+            # Gelblicher Kreis als Ausgangssymbol
+            color = (intensity, int(intensity * 0.9), int(intensity * 0.3))
+            pygame.draw.circle(surface, color, (int(self.x), int(self.y)), self.radius, 2)
+            # Kleiner Innenpunkt
+            pygame.draw.circle(surface, color, (int(self.x), int(self.y)), 4)
+
+# Einzelner Schallstrahl
 class SoundRay:
     def __init__(self, x, y, angle, speed=5.0, max_life=45, bounces=1, color=CYAN):
         self.x = x
@@ -58,7 +86,7 @@ class SoundRay:
         self.prev_x = x
         self.prev_y = y
 
-    def update(self, walls):
+    def update(self, walls, exit_zone=None):
         if not self.alive:
             return
 
@@ -67,6 +95,12 @@ class SoundRay:
 
         next_x = self.x + self.vx
         next_y = self.y + self.vy
+
+        # Ausgang beleuchten wenn Schall ihn trifft
+        if exit_zone:
+            dist_to_exit = math.hypot(self.x - exit_zone.x, self.y - exit_zone.y)
+            if dist_to_exit < exit_zone.radius:
+                exit_zone.glow = 1.0
 
         hit = None
         closest_t = 1.0
@@ -144,6 +178,26 @@ def line_intersection(p0_x, p0_y, p1_x, p1_y, p2_x, p2_y, p3_x, p3_y):
         return (t, ix, iy, nx, ny)
     return None
 
+# Spieler kollidiert mit Wand und gleitet daran entlang
+def resolve_player_wall_collision(px, py, radius, wall):
+    dx = wall.x2 - wall.x1
+    dy = wall.y2 - wall.y1
+    seg_len_sq = dx * dx + dy * dy
+    if seg_len_sq == 0:
+        return px, py
+
+    t = max(0.0, min(1.0, ((px - wall.x1) * dx + (py - wall.y1) * dy) / seg_len_sq))
+    nearest_x = wall.x1 + t * dx
+    nearest_y = wall.y1 + t * dy
+
+    dist = math.hypot(px - nearest_x, py - nearest_y)
+    if 0 < dist < radius:
+        overlap = radius - dist
+        push_x = (px - nearest_x) / dist * overlap
+        push_y = (py - nearest_y) / dist * overlap
+        return px + push_x, py + push_y
+    return px, py
+
 # Schallwelle erzeugen
 def emit_sound_pulse(x, y, ray_count=48, speed=5.0, max_life=50, bounces=1, color=CYAN):
     new_rays = []
@@ -152,33 +206,68 @@ def emit_sound_pulse(x, y, ray_count=48, speed=5.0, max_life=50, bounces=1, colo
         new_rays.append(SoundRay(x, y, angle, speed=speed, max_life=max_life, bounces=bounces, color=color))
     return new_rays
 
-# Wände für Testlevel
-walls = [
-    Wall(50, 50, 750, 50),
-    Wall(750, 50, 750, 550),
-    Wall(750, 550, 50, 550),
-    Wall(50, 550, 50, 50),
-    Wall(250, 50, 250, 400),
-    Wall(500, 200, 500, 550),
+# Level-Strukturen
+LEVELS = [
+    {
+        "name": "Level 1: Erwachen",
+        "start": (120, 300),
+        "exit": (680, 300),
+        "walls": [
+            # Begrenzung
+            Wall(60, 60, 740, 60),
+            Wall(740, 60, 740, 540),
+            Wall(740, 540, 60, 540),
+            Wall(60, 540, 60, 60),
+            # Schlauchiger Flur
+            Wall(250, 60, 250, 420),
+            Wall(450, 180, 450, 540),
+        ]
+    },
+    {
+        "name": "Level 2: Verzweigung",
+        "start": (100, 100),
+        "exit": (700, 500),
+        "walls": [
+            # Raumaußenwände
+            Wall(50, 50, 750, 50),
+            Wall(750, 50, 750, 550),
+            Wall(750, 550, 50, 550),
+            Wall(50, 550, 50, 50),
+            # Hindernisse & Säulen
+            Wall(200, 50, 200, 350),
+            Wall(350, 200, 350, 550),
+            Wall(500, 50, 500, 350),
+            Wall(620, 200, 620, 550),
+        ]
+    }
 ]
 
+current_level_idx = 0
+
+def load_level(idx):
+    lvl = LEVELS[idx]
+    px, py = lvl["start"]
+    exit_x, exit_y = lvl["exit"]
+    walls = [Wall(w.x1, w.y1, w.x2, w.y2) for w in lvl["walls"]]
+    exit_zone = ExitZone(exit_x, exit_y)
+    return px, py, walls, exit_zone
+
+player_x, player_y, walls, exit_zone = load_level(current_level_idx)
+
 # Spieler-Attribute
-player_x = 150.0
-player_y = 300.0
 player_normal_speed = 3.6
 player_sneak_speed = 1.6
-player_radius = 6
+player_radius = 7
 
-# Schrittgeräusche beim Gehen
 walk_distance = 0.0
 step_interval = 28.0
 
-# Aufladen für Stampfen (Leertaste halten)
 charging = False
 charge_time = 0.0
 max_charge = 1.0
 
 rays = []
+game_state = "PLAYING" # "PLAYING", "LEVEL_CLEAR", "GAME_OVER"
 
 running = True
 while running:
@@ -188,95 +277,110 @@ while running:
         if event.type == pygame.QUIT:
             running = False
 
-        # Leertaste drücken: Aufladen starten
-        if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_SPACE:
-                charging = True
-                charge_time = 0.0
+        if game_state == "PLAYING":
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_SPACE:
+                    charging = True
+                    charge_time = 0.0
 
-        # Leertaste loslassen: Schall je nach Ladezeit aussenden
-        if event.type == pygame.KEYUP:
-            if event.key == pygame.K_SPACE and charging:
-                charging = False
-                charge_ratio = min(1.0, charge_time / max_charge)
+            if event.type == pygame.KEYUP:
+                if event.key == pygame.K_SPACE and charging:
+                    charging = False
+                    charge_ratio = min(1.0, charge_time / max_charge)
 
-                if charge_ratio < 0.2:
-                    # Kurzes Klatschen
-                    rays.extend(emit_sound_pulse(player_x, player_y, ray_count=36, speed=4.5, max_life=40, bounces=1, color=CYAN))
-                else:
-                    # Starkes Stampfen
-                    ray_count = int(48 + charge_ratio * 40)
-                    speed = 5.0 + charge_ratio * 2.5
-                    life = int(50 + charge_ratio * 40)
-                    bounces = 2 if charge_ratio < 0.7 else 3
-                    rays.extend(emit_sound_pulse(player_x, player_y, ray_count=ray_count, speed=speed, max_life=life, bounces=bounces, color=WHITE))
+                    if charge_ratio < 0.2:
+                        rays.extend(emit_sound_pulse(player_x, player_y, ray_count=36, speed=4.5, max_life=40, bounces=1, color=CYAN))
+                    else:
+                        ray_count = int(48 + charge_ratio * 40)
+                        speed = 5.0 + charge_ratio * 2.5
+                        life = int(50 + charge_ratio * 40)
+                        bounces = 2 if charge_ratio < 0.7 else 3
+                        rays.extend(emit_sound_pulse(player_x, player_y, ray_count=ray_count, speed=speed, max_life=life, bounces=bounces, color=WHITE))
 
-    keys = pygame.key.get_pressed()
+        elif game_state == "LEVEL_CLEAR":
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+                current_level_idx = (current_level_idx + 1) % len(LEVELS)
+                player_x, player_y, walls, exit_zone = load_level(current_level_idx)
+                rays.clear()
+                game_state = "PLAYING"
 
-    # Schleichen mit Shift (halbe Geschwindigkeit, keine Schritte)
-    is_sneaking = keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]
-    current_speed = player_sneak_speed if is_sneaking else player_normal_speed
+    if game_state == "PLAYING":
+        keys = pygame.key.get_pressed()
+        is_sneaking = keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]
+        current_speed = player_sneak_speed if is_sneaking else player_normal_speed
 
-    move_x = 0
-    move_y = 0
-    if keys[pygame.K_w]: move_y -= 1
-    if keys[pygame.K_s]: move_y += 1
-    if keys[pygame.K_a]: move_x -= 1
-    if keys[pygame.K_d]: move_x += 1
+        move_x = 0
+        move_y = 0
+        if keys[pygame.K_w]: move_y -= 1
+        if keys[pygame.K_s]: move_y += 1
+        if keys[pygame.K_a]: move_x -= 1
+        if keys[pygame.K_d]: move_x += 1
 
-    # Diagonale Bewegung normalisieren
-    if move_x != 0 or move_y != 0:
-        length = math.hypot(move_x, move_y)
-        dx = (move_x / length) * current_speed
-        dy = (move_y / length) * current_speed
+        if move_x != 0 or move_y != 0:
+            length = math.hypot(move_x, move_y)
+            dx = (move_x / length) * current_speed
+            dy = (move_y / length) * current_speed
 
-        player_x += dx
-        player_y += dy
+            # Bewegung mit Wandkollision
+            player_x += dx
+            player_y += dy
 
-        # Nur Schritte erzeugen wenn nicht geschlichen wird
-        if not is_sneaking:
-            walk_distance += math.hypot(dx, dy)
-            if walk_distance >= step_interval:
-                walk_distance = 0.0
-                # Kleine Schallwelle bei jedem Schritt
-                rays.extend(emit_sound_pulse(player_x, player_y, ray_count=16, speed=3.0, max_life=22, bounces=0, color=DARK_CYAN))
-    else:
-        walk_distance = step_interval * 0.5
+            # Gegen alle Wände prüfen
+            for wall in walls:
+                player_x, player_y = resolve_player_wall_collision(player_x, player_y, player_radius, wall)
 
-    # Stampfen aufladen
-    if charging:
-        charge_time += dt
+            if not is_sneaking:
+                walk_distance += math.hypot(dx, dy)
+                if walk_distance >= step_interval:
+                    walk_distance = 0.0
+                    rays.extend(emit_sound_pulse(player_x, player_y, ray_count=16, speed=3.0, max_life=22, bounces=0, color=DARK_CYAN))
+        else:
+            walk_distance = step_interval * 0.5
 
-    # Wände aktualisieren
-    for wall in walls:
-        wall.update()
+        if charging:
+            charge_time += dt
 
-    # Strahlen aktualisieren
-    for ray in rays:
-        ray.update(walls)
-    rays = [r for r in rays if r.alive]
+        # Ausgang prüfen
+        exit_dist = math.hypot(player_x - exit_zone.x, player_y - exit_zone.y)
+        if exit_dist < exit_zone.radius:
+            game_state = "LEVEL_CLEAR"
+
+        # Wände und Ausgang updaten
+        for wall in walls:
+            wall.update()
+        exit_zone.update(dt)
+
+        # Strahlen aktualisieren
+        for ray in rays:
+            ray.update(walls, exit_zone)
+        rays = [r for r in rays if r.alive]
 
     # Zeichnen
     screen.fill(BLACK)
 
-    # Wände zeichnen
-    for wall in walls:
-        wall.draw(screen)
+    if game_state == "PLAYING":
+        for wall in walls:
+            wall.draw(screen)
 
-    # Schallstrahlen zeichnen
-    for ray in rays:
-        ray.draw(screen)
+        exit_zone.draw(screen)
 
-    # Lade-Ring um den Spieler anzeigen
-    if charging:
-        charge_ratio = min(1.0, charge_time / max_charge)
-        ring_radius = int(player_radius + 4 + charge_ratio * 16)
-        ring_color = WHITE if charge_ratio > 0.8 else CYAN
-        pygame.draw.circle(screen, ring_color, (int(player_x), int(player_y)), ring_radius, 1)
+        for ray in rays:
+            ray.draw(screen)
 
-    # Spieler zeichnen (beim Schleichen dunkler)
-    player_color = GRAY if is_sneaking else WHITE
-    pygame.draw.circle(screen, player_color, (int(player_x), int(player_y)), player_radius)
+        if charging:
+            charge_ratio = min(1.0, charge_time / max_charge)
+            ring_radius = int(player_radius + 4 + charge_ratio * 16)
+            ring_color = WHITE if charge_ratio > 0.8 else CYAN
+            pygame.draw.circle(screen, ring_color, (int(player_x), int(player_y)), ring_radius, 1)
+
+        player_color = GRAY if is_sneaking else WHITE
+        pygame.draw.circle(screen, player_color, (int(player_x), int(player_y)), player_radius)
+
+    elif game_state == "LEVEL_CLEAR":
+        txt = title_font.render("AUSGANG ERREICHT!", True, YELLOW)
+        sub = font.render("Drücke LEERTASTE für das nächste Level", True, WHITE)
+        screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 40))
+        screen.blit(sub, (WIDTH // 2 - sub.get_width() // 2, HEIGHT // 2 + 20))
 
     pygame.display.flip()
 
