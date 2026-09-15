@@ -1,9 +1,14 @@
 import pygame
 import sys
 import math
+import numpy as np
 
 # Pygame initialisieren
 pygame.init()
+try:
+    pygame.mixer.init(frequency=44100, size=-16, channels=2)
+except Exception:
+    pass
 
 # Fenster und Konstanten einrichten
 WIDTH = 800
@@ -15,6 +20,7 @@ pygame.display.set_caption("Blind Echo")
 BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
 GRAY = (120, 120, 120)
+DARK_GRAY = (50, 50, 50)
 CYAN = (0, 255, 255)
 DARK_CYAN = (0, 140, 160)
 BLUE = (60, 160, 255)
@@ -24,8 +30,61 @@ DARK_RED = (160, 20, 20)
 
 clock = pygame.time.Clock()
 FPS = 60
-font = pygame.font.SysFont("Arial", 22)
-title_font = pygame.font.SysFont("Arial", 36, bold=True)
+
+font = pygame.font.SysFont("Arial", 20)
+hud_font = pygame.font.SysFont("Arial", 16)
+title_font = pygame.font.SysFont("Arial", 42, bold=True)
+subtitle_font = pygame.font.SysFont("Arial", 24)
+
+# Prozedurale Soundeffekte mit Numpy erzeugen
+SR = 44100
+
+def synth_sound(mono_arr):
+    try:
+        stereo = np.ascontiguousarray(np.column_stack((mono_arr, mono_arr)).astype(np.int16))
+        return pygame.sndarray.make_sound(stereo)
+    except Exception:
+        return None
+
+# Schritt
+t_step = np.linspace(0, 0.04, int(SR * 0.04), False)
+arr_step = np.sin(2 * np.pi * 160 * t_step) * np.exp(-t_step * 80) * 10000
+snd_step = synth_sound(arr_step)
+
+# Stampfen / Klatschen
+t_stomp = np.linspace(0, 0.35, int(SR * 0.35), False)
+noise_stomp = np.random.uniform(-1, 1, len(t_stomp)) * 0.3
+arr_stomp = (np.sin(2 * np.pi * 70 * t_stomp) + noise_stomp) * np.exp(-t_stomp * 9) * 25000
+snd_stomp = synth_sound(arr_stomp)
+
+# Wasserplätschern
+t_splash = np.linspace(0, 0.12, int(SR * 0.12), False)
+noise_splash = np.random.uniform(-1, 1, len(t_splash))
+arr_splash = (np.sin(2 * np.pi * 320 * t_splash) + noise_splash * 0.5) * np.exp(-t_splash * 25) * 14000
+snd_splash = synth_sound(arr_splash)
+
+# Monsterbrüllen
+t_growl = np.linspace(0, 0.45, int(SR * 0.45), False)
+arr_growl = np.sin(2 * np.pi * 55 * t_growl + np.sin(2 * np.pi * 12 * t_growl) * 4) * np.exp(-t_growl * 4) * 24000
+snd_growl = synth_sound(arr_growl)
+
+# Ausgang erreicht (Glockenton)
+t_win = np.linspace(0, 0.5, int(SR * 0.5), False)
+arr_win = (np.sin(2 * np.pi * 523.25 * t_win) + np.sin(2 * np.pi * 659.25 * t_win)) * np.exp(-t_win * 5) * 14000
+snd_win = synth_sound(arr_win)
+
+# Gefasst / Tod
+t_die = np.linspace(0, 0.4, int(SR * 0.4), False)
+noise_die = np.random.uniform(-1, 1, len(t_die))
+arr_die = noise_die * np.exp(-t_die * 6) * 25000
+snd_die = synth_sound(arr_die)
+
+def play(snd):
+    if snd:
+        try:
+            snd.play()
+        except Exception:
+            pass
 
 # Wand als Liniensegment
 class Wall:
@@ -94,25 +153,26 @@ class ExitZone:
             pygame.draw.circle(surface, color, (int(self.x), int(self.y)), self.radius, 2)
             pygame.draw.circle(surface, color, (int(self.x), int(self.y)), 4)
 
-# Monster / Bedrohung in der Dunkelheit
+# Monster
 class Monster:
-    def __init__(self, x, y, speed=2.5):
+    def __init__(self, x, y, speed=2.6):
         self.x = x
         self.y = y
         self.start_x = x
         self.start_y = y
         self.radius = 12
         self.speed = speed
-        self.state = "SLEEP"  # "SLEEP", "HUNT"
+        self.state = "SLEEP"
         self.target_x = x
         self.target_y = y
         self.pulse_timer = 0.0
         self.roar_timer = 0.0
 
     def hear_sound(self, sound_x, sound_y):
-        # Wenn Schall in Hörreichweite ist, wacht das Monster auf
         dist = math.hypot(self.x - sound_x, self.y - sound_y)
-        if dist < 320:
+        if dist < 340:
+            if self.state == "SLEEP":
+                play(snd_growl)
             self.state = "HUNT"
             self.target_x = sound_x
             self.target_y = sound_y
@@ -121,42 +181,35 @@ class Monster:
         self.pulse_timer += dt
 
         if self.state == "SLEEP":
-            # Schlafendes Monster pulsiert langsam rot
-            if self.pulse_timer >= 2.0:
+            if self.pulse_timer >= 2.2:
                 self.pulse_timer = 0.0
                 rays_list.extend(emit_sound_pulse(self.x, self.y, ray_count=16, speed=2.0, max_life=30, bounces=0, color=DARK_RED))
 
         elif self.state == "HUNT":
-            # Direkt auf den Spieler zubewegen wenn in der Nähe
             dist_to_player = math.hypot(self.x - player_x, self.y - player_y)
             if dist_to_player < 280:
                 self.target_x = player_x
                 self.target_y = player_y
 
-            # Bewegung zum Ziel
             dx = self.target_x - self.x
             dy = self.target_y - self.y
             dist = math.hypot(dx, dy)
 
             if dist > 8:
-                step_x = (dx / dist) * self.speed
-                step_y = (dy / dist) * self.speed
-                self.x += step_x
-                self.y += step_y
+                self.x += (dx / dist) * self.speed
+                self.y += (dy / dist) * self.speed
 
-                # Wandkollision für Monster
                 for wall in walls:
                     self.x, self.y = resolve_player_wall_collision(self.x, self.y, self.radius, wall)
 
-            # Bei der Jagd aggressive rote Schallwellen ausstoßen
             self.roar_timer += dt
             if self.roar_timer >= 0.7:
                 self.roar_timer = 0.0
+                play(snd_growl)
                 rays_list.extend(emit_sound_pulse(self.x, self.y, ray_count=24, speed=4.0, max_life=35, bounces=1, color=RED))
 
     def draw(self, surface):
         if self.state == "HUNT":
-            # In der Jagd sichtbar als bedrohlicher roter Punkt
             pygame.draw.circle(surface, RED, (int(self.x), int(self.y)), self.radius)
             pygame.draw.circle(surface, WHITE, (int(self.x), int(self.y)), 3)
 
@@ -186,7 +239,6 @@ class SoundRay:
         next_x = self.x + self.vx
         next_y = self.y + self.vy
 
-        # Wasserzone zum Schimmern bringen
         for water in water_zones:
             if water.contains(self.x, self.y):
                 water.glow = max(water.glow, 0.7)
@@ -196,7 +248,6 @@ class SoundRay:
             if dist_to_exit < exit_zone.radius:
                 exit_zone.glow = 1.0
 
-        # Wenn Spielerschall ein Monster trifft -> Monster alarmieren
         if monsters and self.color != RED and self.color != DARK_RED:
             for monster in monsters:
                 dist_m = math.hypot(self.x - monster.x, self.y - monster.y)
@@ -220,7 +271,6 @@ class SoundRay:
                     hit_normal = (nx, ny)
 
         if hit and hit_wall:
-            # Wände leuchten in Farbe des Strahls wenn roter Schall auftrifft
             hit_wall.glow = 1.0
             self.x, self.y = hit
 
@@ -352,7 +402,6 @@ LEVELS = [
             Wall(750, 80, 750, 520),
             Wall(750, 520, 50, 520),
             Wall(50, 520, 50, 80),
-            # Mittelraum mit Hindernissen
             Wall(260, 180, 260, 420),
             Wall(540, 180, 540, 420),
         ],
@@ -413,7 +462,11 @@ charge_time = 0.0
 max_charge = 1.0
 
 rays = []
-game_state = "PLAYING"
+game_state = "MENU"  # "MENU", "PLAYING", "LEVEL_CLEAR", "GAME_OVER", "VICTORY"
+
+# Menü Puls-Effekt
+menu_pulse_timer = 0.0
+menu_rays = []
 
 running = True
 while running:
@@ -423,7 +476,14 @@ while running:
         if event.type == pygame.QUIT:
             running = False
 
-        if game_state == "PLAYING":
+        if game_state == "MENU":
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+                current_level_idx = 0
+                player_x, player_y, walls, water_zones, monsters, exit_zone = load_level(current_level_idx)
+                rays.clear()
+                game_state = "PLAYING"
+
+        elif game_state == "PLAYING":
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_SPACE:
                     charging = True
@@ -438,33 +498,56 @@ while running:
                     pulse_color = BLUE if in_water else (CYAN if charge_ratio < 0.2 else WHITE)
 
                     if charge_ratio < 0.2:
+                        play(snd_step)
                         rays.extend(emit_sound_pulse(player_x, player_y, ray_count=36, speed=4.5, max_life=40, bounces=1, color=pulse_color))
                     else:
+                        play(snd_stomp)
                         ray_count = int(48 + charge_ratio * 40)
                         speed = 5.0 + charge_ratio * 2.5
                         life = int(50 + charge_ratio * 40)
                         bounces = 2 if charge_ratio < 0.7 else 3
                         rays.extend(emit_sound_pulse(player_x, player_y, ray_count=ray_count, speed=speed, max_life=life, bounces=bounces, color=pulse_color))
 
-                    # Lauter Schall alarmiert Monster
                     for monster in monsters:
                         monster.hear_sound(player_x, player_y)
 
         elif game_state == "LEVEL_CLEAR":
             if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
-                current_level_idx = (current_level_idx + 1) % len(LEVELS)
-                player_x, player_y, walls, water_zones, monsters, exit_zone = load_level(current_level_idx)
-                rays.clear()
-                game_state = "PLAYING"
+                if current_level_idx + 1 < len(LEVELS):
+                    current_level_idx += 1
+                    player_x, player_y, walls, water_zones, monsters, exit_zone = load_level(current_level_idx)
+                    rays.clear()
+                    game_state = "PLAYING"
+                else:
+                    game_state = "VICTORY"
 
         elif game_state == "GAME_OVER":
             if event.type == pygame.KEYDOWN and event.key == pygame.K_r:
-                # Level neu starten
                 player_x, player_y, walls, water_zones, monsters, exit_zone = load_level(current_level_idx)
                 rays.clear()
                 game_state = "PLAYING"
 
-    if game_state == "PLAYING":
+        elif game_state == "VICTORY":
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+                game_state = "MENU"
+
+    # MENÜ LOGIK
+    if game_state == "MENU":
+        menu_pulse_timer += dt
+        if menu_pulse_timer >= 1.5:
+            menu_pulse_timer = 0.0
+            menu_rays.extend(emit_sound_pulse(WIDTH // 2, 210, ray_count=32, speed=3.2, max_life=45, bounces=0, color=CYAN))
+
+        for r in menu_rays:
+            r.x += r.vx
+            r.y += r.vy
+            r.life -= 1
+            if r.life <= 0:
+                r.alive = False
+        menu_rays = [r for r in menu_rays if r.alive]
+
+    # SPIELLOGIK
+    elif game_state == "PLAYING":
         keys = pygame.key.get_pressed()
         is_sneaking = keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]
         
@@ -499,11 +582,12 @@ while running:
                 if walk_distance >= effective_interval:
                     walk_distance = 0.0
                     if in_water:
+                        play(snd_splash)
                         rays.extend(emit_sound_pulse(player_x, player_y, ray_count=22, speed=3.2, max_life=30, bounces=1, color=BLUE))
-                        # Plätschern alarmiert Monster
                         for monster in monsters:
                             monster.hear_sound(player_x, player_y)
                     else:
+                        play(snd_step)
                         rays.extend(emit_sound_pulse(player_x, player_y, ray_count=16, speed=3.0, max_life=22, bounces=0, color=DARK_CYAN))
         else:
             walk_distance = step_interval * 0.5
@@ -511,15 +595,18 @@ while running:
         if charging:
             charge_time += dt
 
-        # Monster aktualisieren & Kollision prüfen
+        # Monster prüfen
         for monster in monsters:
             monster.update(dt, player_x, player_y, walls, rays)
             dist_to_player = math.hypot(monster.x - player_x, monster.y - player_y)
             if dist_to_player < monster.radius + player_radius:
+                play(snd_die)
                 game_state = "GAME_OVER"
 
+        # Ausgang prüfen
         exit_dist = math.hypot(player_x - exit_zone.x, player_y - exit_zone.y)
         if exit_dist < exit_zone.radius:
+            play(snd_win)
             game_state = "LEVEL_CLEAR"
 
         for wall in walls:
@@ -532,10 +619,38 @@ while running:
             ray.update(walls, water_zones, exit_zone, monsters)
         rays = [r for r in rays if r.alive]
 
-    # Zeichnen
+    # RENDERING
     screen.fill(BLACK)
 
-    if game_state == "PLAYING":
+    if game_state == "MENU":
+        for r in menu_rays:
+            r.draw(screen)
+
+        t_title = title_font.render("BLIND ECHO", True, WHITE)
+        t_sub = font.render("Ein 2D-Echolot-Horrorspiel in völliger Dunkelheit", True, GRAY)
+        screen.blit(t_title, (WIDTH // 2 - t_title.get_width() // 2, 180))
+        screen.blit(t_sub, (WIDTH // 2 - t_sub.get_width() // 2, 245))
+
+        # Steuerungsübersicht
+        lines = [
+            ("WASD", "Bewegen (erzeugt Schritte)"),
+            ("SHIFT (halten)", "Schleichen (völlig lautlos)"),
+            ("LEERTASTE (tippen)", "Klatschen (Schallimpuls)"),
+            ("LEERTASTE (halten)", "Stampfen aufladen (weites Echo)"),
+            ("Vermeide das rote Monster!", "Es jagt Geräusche!")
+        ]
+        start_y = 310
+        for key_txt, desc_txt in lines:
+            k = font.render(key_txt, True, CYAN)
+            d = font.render(f"-  {desc_txt}", True, WHITE)
+            screen.blit(k, (210, start_y))
+            screen.blit(d, (370, start_y))
+            start_y += 30
+
+        start_btn = subtitle_font.render("[ Drücke LEERTASTE zum Starten ]", True, YELLOW)
+        screen.blit(start_btn, (WIDTH // 2 - start_btn.get_width() // 2, 490))
+
+    elif game_state == "PLAYING":
         for water in water_zones:
             water.draw(screen)
 
@@ -559,6 +674,10 @@ while running:
         player_color = BLUE if in_water else (GRAY if is_sneaking else WHITE)
         pygame.draw.circle(screen, player_color, (int(player_x), int(player_y)), player_radius)
 
+        # Dezent Levelname einblenden
+        lvl_label = hud_font.render(LEVELS[current_level_idx]["name"], True, DARK_GRAY)
+        screen.blit(lvl_label, (20, 20))
+
     elif game_state == "LEVEL_CLEAR":
         txt = title_font.render("AUSGANG ERREICHT!", True, YELLOW)
         sub = font.render("Drücke LEERTASTE für das nächste Level", True, WHITE)
@@ -570,6 +689,14 @@ while running:
         sub = font.render("Drücke 'R' um das Level neu zu starten", True, WHITE)
         screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 40))
         screen.blit(sub, (WIDTH // 2 - sub.get_width() // 2, HEIGHT // 2 + 20))
+
+    elif game_state == "VICTORY":
+        txt = title_font.render("ENTKOMMEN!", True, YELLOW)
+        sub = font.render("Du hast alle Räume in der Dunkelheit überlebt.", True, WHITE)
+        rst = font.render("Drücke LEERTASTE für das Hauptmenü", True, CYAN)
+        screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 60))
+        screen.blit(sub, (WIDTH // 2 - sub.get_width() // 2, HEIGHT // 2))
+        screen.blit(rst, (WIDTH // 2 - rst.get_width() // 2, HEIGHT // 2 + 50))
 
     pygame.display.flip()
 
