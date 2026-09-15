@@ -18,8 +18,9 @@ GRAY = (120, 120, 120)
 CYAN = (0, 255, 255)
 DARK_CYAN = (0, 140, 160)
 BLUE = (60, 160, 255)
-DARK_BLUE = (20, 70, 140)
 YELLOW = (255, 220, 70)
+RED = (255, 45, 45)
+DARK_RED = (160, 20, 20)
 
 clock = pygame.time.Clock()
 FPS = 60
@@ -45,7 +46,7 @@ class Wall:
             color = (intensity, intensity, intensity)
             pygame.draw.line(surface, color, (self.x1, self.y1), (self.x2, self.y2), 2)
 
-# Wasser-Pfütze (verlangsamt und erzeugt blaue Spritzer)
+# Wasserzone
 class WaterZone:
     def __init__(self, x, y, w, h):
         self.rect = pygame.Rect(x, y, w, h)
@@ -60,19 +61,16 @@ class WaterZone:
 
     def draw(self, surface):
         if self.glow > 0:
-            # Wasserfläche zart blau schimmern lassen
             surf = pygame.Surface((self.rect.w, self.rect.h), pygame.SRCALPHA)
             alpha = int(self.glow * 70)
             surf.fill((20, 90, 180, alpha))
             surface.blit(surf, self.rect.topleft)
-            # Umrandung zeichnen
-            border_alpha = int(self.glow * 200)
             border_color = (min(255, int(BLUE[0] * self.glow)),
                             min(255, int(BLUE[1] * self.glow)),
                             min(255, int(BLUE[2] * self.glow)))
             pygame.draw.rect(surface, border_color, self.rect, 1)
 
-# Ausgangs-Zone (Ziel des Levels)
+# Ausgangs-Zone
 class ExitZone:
     def __init__(self, x, y, radius=24):
         self.x = x
@@ -96,6 +94,72 @@ class ExitZone:
             pygame.draw.circle(surface, color, (int(self.x), int(self.y)), self.radius, 2)
             pygame.draw.circle(surface, color, (int(self.x), int(self.y)), 4)
 
+# Monster / Bedrohung in der Dunkelheit
+class Monster:
+    def __init__(self, x, y, speed=2.5):
+        self.x = x
+        self.y = y
+        self.start_x = x
+        self.start_y = y
+        self.radius = 12
+        self.speed = speed
+        self.state = "SLEEP"  # "SLEEP", "HUNT"
+        self.target_x = x
+        self.target_y = y
+        self.pulse_timer = 0.0
+        self.roar_timer = 0.0
+
+    def hear_sound(self, sound_x, sound_y):
+        # Wenn Schall in Hörreichweite ist, wacht das Monster auf
+        dist = math.hypot(self.x - sound_x, self.y - sound_y)
+        if dist < 320:
+            self.state = "HUNT"
+            self.target_x = sound_x
+            self.target_y = sound_y
+
+    def update(self, dt, player_x, player_y, walls, rays_list):
+        self.pulse_timer += dt
+
+        if self.state == "SLEEP":
+            # Schlafendes Monster pulsiert langsam rot
+            if self.pulse_timer >= 2.0:
+                self.pulse_timer = 0.0
+                rays_list.extend(emit_sound_pulse(self.x, self.y, ray_count=16, speed=2.0, max_life=30, bounces=0, color=DARK_RED))
+
+        elif self.state == "HUNT":
+            # Direkt auf den Spieler zubewegen wenn in der Nähe
+            dist_to_player = math.hypot(self.x - player_x, self.y - player_y)
+            if dist_to_player < 280:
+                self.target_x = player_x
+                self.target_y = player_y
+
+            # Bewegung zum Ziel
+            dx = self.target_x - self.x
+            dy = self.target_y - self.y
+            dist = math.hypot(dx, dy)
+
+            if dist > 8:
+                step_x = (dx / dist) * self.speed
+                step_y = (dy / dist) * self.speed
+                self.x += step_x
+                self.y += step_y
+
+                # Wandkollision für Monster
+                for wall in walls:
+                    self.x, self.y = resolve_player_wall_collision(self.x, self.y, self.radius, wall)
+
+            # Bei der Jagd aggressive rote Schallwellen ausstoßen
+            self.roar_timer += dt
+            if self.roar_timer >= 0.7:
+                self.roar_timer = 0.0
+                rays_list.extend(emit_sound_pulse(self.x, self.y, ray_count=24, speed=4.0, max_life=35, bounces=1, color=RED))
+
+    def draw(self, surface):
+        if self.state == "HUNT":
+            # In der Jagd sichtbar als bedrohlicher roter Punkt
+            pygame.draw.circle(surface, RED, (int(self.x), int(self.y)), self.radius)
+            pygame.draw.circle(surface, WHITE, (int(self.x), int(self.y)), 3)
+
 # Einzelner Schallstrahl
 class SoundRay:
     def __init__(self, x, y, angle, speed=5.0, max_life=45, bounces=1, color=CYAN):
@@ -112,7 +176,7 @@ class SoundRay:
         self.prev_x = x
         self.prev_y = y
 
-    def update(self, walls, water_zones, exit_zone=None):
+    def update(self, walls, water_zones, exit_zone=None, monsters=None):
         if not self.alive:
             return
 
@@ -132,6 +196,13 @@ class SoundRay:
             if dist_to_exit < exit_zone.radius:
                 exit_zone.glow = 1.0
 
+        # Wenn Spielerschall ein Monster trifft -> Monster alarmieren
+        if monsters and self.color != RED and self.color != DARK_RED:
+            for monster in monsters:
+                dist_m = math.hypot(self.x - monster.x, self.y - monster.y)
+                if dist_m < monster.radius + 15:
+                    monster.hear_sound(self.x, self.y)
+
         hit = None
         closest_t = 1.0
         hit_wall = None
@@ -149,6 +220,7 @@ class SoundRay:
                     hit_normal = (nx, ny)
 
         if hit and hit_wall:
+            # Wände leuchten in Farbe des Strahls wenn roter Schall auftrifft
             hit_wall.glow = 1.0
             self.x, self.y = hit
 
@@ -234,7 +306,7 @@ def emit_sound_pulse(x, y, ray_count=48, speed=5.0, max_life=50, bounces=1, colo
         new_rays.append(SoundRay(x, y, angle, speed=speed, max_life=max_life, bounces=bounces, color=color))
     return new_rays
 
-# Level-Definitionen mit Wasserzonen
+# Level-Definitionen
 LEVELS = [
     {
         "name": "Level 1: Erwachen",
@@ -248,7 +320,8 @@ LEVELS = [
             Wall(250, 60, 250, 420),
             Wall(450, 180, 450, 540),
         ],
-        "water": []
+        "water": [],
+        "monsters": []
     },
     {
         "name": "Level 2: Kaltes Wasser",
@@ -265,9 +338,50 @@ LEVELS = [
             Wall(620, 200, 620, 550),
         ],
         "water": [
-            # Wasserabschnitte in den Gängen
             WaterZone(200, 350, 150, 200),
             WaterZone(500, 350, 120, 200)
+        ],
+        "monsters": []
+    },
+    {
+        "name": "Level 3: Die Kreatur",
+        "start": (100, 300),
+        "exit": (700, 300),
+        "walls": [
+            Wall(50, 80, 750, 80),
+            Wall(750, 80, 750, 520),
+            Wall(750, 520, 50, 520),
+            Wall(50, 520, 50, 80),
+            # Mittelraum mit Hindernissen
+            Wall(260, 180, 260, 420),
+            Wall(540, 180, 540, 420),
+        ],
+        "water": [],
+        "monsters": [
+            Monster(400, 300, speed=2.8)
+        ]
+    },
+    {
+        "name": "Level 4: Das Labyrinth",
+        "start": (100, 500),
+        "exit": (700, 100),
+        "walls": [
+            Wall(50, 50, 750, 50),
+            Wall(750, 50, 750, 550),
+            Wall(750, 550, 50, 550),
+            Wall(50, 550, 50, 50),
+            Wall(180, 50, 180, 430),
+            Wall(300, 170, 300, 550),
+            Wall(440, 50, 440, 400),
+            Wall(580, 150, 580, 550),
+        ],
+        "water": [
+            WaterZone(180, 430, 120, 120),
+            WaterZone(440, 400, 140, 150)
+        ],
+        "monsters": [
+            Monster(370, 220, speed=2.9),
+            Monster(650, 350, speed=3.1)
         ]
     }
 ]
@@ -280,10 +394,11 @@ def load_level(idx):
     exit_x, exit_y = lvl["exit"]
     walls = [Wall(w.x1, w.y1, w.x2, w.y2) for w in lvl["walls"]]
     water_zones = [WaterZone(w.rect.x, w.rect.y, w.rect.w, w.rect.h) for w in lvl.get("water", [])]
+    monsters = [Monster(m.x, m.y, m.speed) for m in lvl.get("monsters", [])]
     exit_zone = ExitZone(exit_x, exit_y)
-    return px, py, walls, water_zones, exit_zone
+    return px, py, walls, water_zones, monsters, exit_zone
 
-player_x, player_y, walls, water_zones, exit_zone = load_level(current_level_idx)
+player_x, player_y, walls, water_zones, monsters, exit_zone = load_level(current_level_idx)
 
 # Spieler-Attribute
 player_normal_speed = 3.6
@@ -319,7 +434,6 @@ while running:
                     charging = False
                     charge_ratio = min(1.0, charge_time / max_charge)
 
-                    # Prüfen ob Spieler im Wasser steht
                     in_water = any(w.contains(player_x, player_y) for w in water_zones)
                     pulse_color = BLUE if in_water else (CYAN if charge_ratio < 0.2 else WHITE)
 
@@ -332,10 +446,21 @@ while running:
                         bounces = 2 if charge_ratio < 0.7 else 3
                         rays.extend(emit_sound_pulse(player_x, player_y, ray_count=ray_count, speed=speed, max_life=life, bounces=bounces, color=pulse_color))
 
+                    # Lauter Schall alarmiert Monster
+                    for monster in monsters:
+                        monster.hear_sound(player_x, player_y)
+
         elif game_state == "LEVEL_CLEAR":
             if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
                 current_level_idx = (current_level_idx + 1) % len(LEVELS)
-                player_x, player_y, walls, water_zones, exit_zone = load_level(current_level_idx)
+                player_x, player_y, walls, water_zones, monsters, exit_zone = load_level(current_level_idx)
+                rays.clear()
+                game_state = "PLAYING"
+
+        elif game_state == "GAME_OVER":
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_r:
+                # Level neu starten
+                player_x, player_y, walls, water_zones, monsters, exit_zone = load_level(current_level_idx)
                 rays.clear()
                 game_state = "PLAYING"
 
@@ -343,7 +468,6 @@ while running:
         keys = pygame.key.get_pressed()
         is_sneaking = keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]
         
-        # Im Wasser bewegt man sich langsamer
         in_water = any(w.contains(player_x, player_y) for w in water_zones)
         speed_mult = 0.65 if in_water else 1.0
 
@@ -367,7 +491,6 @@ while running:
             for wall in walls:
                 player_x, player_y = resolve_player_wall_collision(player_x, player_y, player_radius, wall)
 
-            # Im Wasser macht jeder Schritt Plätschern (auch beim Schleichen etwas)
             effective_interval = 18.0 if in_water else step_interval
             step_allowed = in_water or (not is_sneaking)
 
@@ -376,8 +499,10 @@ while running:
                 if walk_distance >= effective_interval:
                     walk_distance = 0.0
                     if in_water:
-                        # Wasser-Plätschern (blau)
                         rays.extend(emit_sound_pulse(player_x, player_y, ray_count=22, speed=3.2, max_life=30, bounces=1, color=BLUE))
+                        # Plätschern alarmiert Monster
+                        for monster in monsters:
+                            monster.hear_sound(player_x, player_y)
                     else:
                         rays.extend(emit_sound_pulse(player_x, player_y, ray_count=16, speed=3.0, max_life=22, bounces=0, color=DARK_CYAN))
         else:
@@ -385,6 +510,13 @@ while running:
 
         if charging:
             charge_time += dt
+
+        # Monster aktualisieren & Kollision prüfen
+        for monster in monsters:
+            monster.update(dt, player_x, player_y, walls, rays)
+            dist_to_player = math.hypot(monster.x - player_x, monster.y - player_y)
+            if dist_to_player < monster.radius + player_radius:
+                game_state = "GAME_OVER"
 
         exit_dist = math.hypot(player_x - exit_zone.x, player_y - exit_zone.y)
         if exit_dist < exit_zone.radius:
@@ -397,14 +529,13 @@ while running:
         exit_zone.update(dt)
 
         for ray in rays:
-            ray.update(walls, water_zones, exit_zone)
+            ray.update(walls, water_zones, exit_zone, monsters)
         rays = [r for r in rays if r.alive]
 
     # Zeichnen
     screen.fill(BLACK)
 
     if game_state == "PLAYING":
-        # Zuerst Wasserzonen (unter Wänden)
         for water in water_zones:
             water.draw(screen)
 
@@ -415,6 +546,9 @@ while running:
 
         for ray in rays:
             ray.draw(screen)
+
+        for monster in monsters:
+            monster.draw(screen)
 
         if charging:
             charge_ratio = min(1.0, charge_time / max_charge)
@@ -428,6 +562,12 @@ while running:
     elif game_state == "LEVEL_CLEAR":
         txt = title_font.render("AUSGANG ERREICHT!", True, YELLOW)
         sub = font.render("Drücke LEERTASTE für das nächste Level", True, WHITE)
+        screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 40))
+        screen.blit(sub, (WIDTH // 2 - sub.get_width() // 2, HEIGHT // 2 + 20))
+
+    elif game_state == "GAME_OVER":
+        txt = title_font.render("GEFASST...", True, RED)
+        sub = font.render("Drücke 'R' um das Level neu zu starten", True, WHITE)
         screen.blit(txt, (WIDTH // 2 - txt.get_width() // 2, HEIGHT // 2 - 40))
         screen.blit(sub, (WIDTH // 2 - sub.get_width() // 2, HEIGHT // 2 + 20))
 
